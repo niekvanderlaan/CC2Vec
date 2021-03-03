@@ -130,6 +130,8 @@ class JIT_CC2ftr():
             params.class_num = msg_labels_shape[1]
 
         model = HierachicalRNN(args=params)
+        if params.cuda:
+            model = model.cuda()
 
         optimizer = torch.optim.Adam(model.parameters(), lr=params.l2_reg_lambda)
         criterion = nn.BCEWithLogitsLoss()
