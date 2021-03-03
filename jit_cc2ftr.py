@@ -4,6 +4,14 @@ import numpy as np
 from jit_padding import padding_message, clean_and_reformat_code, padding_commit_code, mapping_dict_msg, mapping_dict_code, convert_msg_to_label
 from jit_cc2ftr_train import train_model
 from jit_cc2ftr_extracted import extracted_cc2ftr
+from jit_utils import mini_batches, save
+import torch
+import os, datetime
+import torch
+import torch.nn as nn
+from tqdm import tqdm
+from jit_cc2ftr_model import HierachicalRNN
+import gc
 
 def read_args():
     parser = argparse.ArgumentParser()
@@ -50,40 +58,140 @@ def read_args():
     parser.add_argument('-no-cuda', action='store_true', default=False, help='disable the GPU')
     return parser
 
+class JIT_CC2ftr():
+
+    def __init__(self, params):
+        self.params = params
+        self.params.cuda = (not params.no_cuda) and torch.cuda.is_available()
+        self.params.device = torch.device('cuda' if self.params.cuda else 'cpu')
+
+        if params.train is True:
+            train_data = pickle.load(open(params.train_data, 'rb'))
+            train_ids, train_labels, train_messages, train_codes = train_data
+
+            test_data = pickle.load(open(params.test_data, 'rb'))
+            test_ids, test_labels, test_messages, test_codes = test_data
+
+            self.ids = train_ids + test_ids
+            self.labels = list(train_labels) + list(test_labels)
+            self.msgs = train_messages + test_messages
+            self.codes = train_codes + test_codes
+
+            dictionary = pickle.load(open(params.dictionary_data, 'rb'))
+            self.dict_msg, self.dict_code = dictionary
+        else:
+            data = pickle.load(open(params.predict_data, 'rb'))
+            self.ids, self.labels, self.msgs, self.codes = data
+
+            dictionary = pickle.load(open(params.dictionary_data, 'rb'))
+            self.dict_msg, self.dict_code = dictionary
+
+    def apply_padding(self):
+        params = self.params
+        self.msgs = padding_message(data=self.msgs, max_length=params.msg_length)
+        self.added_code, self.removed_code = clean_and_reformat_code(self.codes)
+        self.added_code = padding_commit_code(data=self.added_code, max_file=params.code_file, max_line=params.code_line,
+                                         max_length=params.code_length)
+        self.removed_code = padding_commit_code(data=self.removed_code, max_file=params.code_file, max_line=params.code_line,
+                                           max_length=params.code_length)
+
+    def apply_mapping(self):
+        self.msgs = mapping_dict_msg(pad_msg=self.msgs, dict_msg=self.dict_msg)
+        self.added_code = mapping_dict_code(pad_code=self.added_code, dict_code=self.dict_code)
+        self.removed_code = mapping_dict_code(pad_code=self.removed_code, dict_code=self.dict_code)
+        self.msgs = convert_msg_to_label(pad_msg=self.msgs, dict_msg=self.dict_msg)
+
+    def _clean_unused_variables(self):
+        del self.msgs
+        del self.added_code
+        del self.removed_code
+        gc.collect()
+
+    def train(self):
+        params = self.params
+        batches = mini_batches(X_added_code=self.added_code, X_removed_code=self.removed_code, Y=self.msgs,
+                               mini_batch_size=params.batch_size)
+
+        msg_labels_shape = self.msgs.shape
+
+        self._clean_unused_variables()
+
+        params.save_dir = os.path.join(params.save_dir, datetime.datetime.now().strftime('%Y-%m-%d_%H-%M-%S'))
+        params.vocab_code = len(self.dict_code)
+
+        if len(msg_labels_shape) == 1:
+            params.class_num = 1
+        else:
+            params.class_num = msg_labels_shape[1]
+
+        model = HierachicalRNN(args=params)
+
+        optimizer = torch.optim.Adam(model.parameters(), lr=params.l2_reg_lambda)
+        criterion = nn.BCEWithLogitsLoss()
+
+        batches = batches[:400]
+        params.num_epochs = 10
+        for epoch in range(1, params.num_epochs + 1):
+            total_loss = 0
+            for i, (batch) in enumerate(tqdm(batches)):
+                # reset the hidden state of hierarchical attention model
+                state_word = model.init_hidden_word()
+                state_sent = model.init_hidden_sent()
+                state_hunk = model.init_hidden_hunk()
+
+                pad_added_code, pad_removed_code, labels = batch
+                labels = torch.FloatTensor(labels)
+                optimizer.zero_grad()
+                predict = model.forward(pad_added_code, pad_removed_code, state_hunk, state_sent, state_word)
+                loss = criterion(predict, labels)
+                loss.backward()
+                total_loss += loss.detach()
+                optimizer.step()
+
+            print('Training: Epoch %i / %i -- Total loss: %f' % (epoch, params.num_epochs, total_loss))
+            save(model, params.save_dir, 'epoch', epoch)
+
+    def predict(self):
+        params = self.params
+        batches = mini_batches(X_added_code=self.added_code, X_removed_code=self.removed_code, Y=self.msgs,
+                               mini_batch_size=params.batch_size, shuffled=False)
+
+        msg_labels_shape = self.msgs.shape
+        params.vocab_code = len(self.dict_code)
+        if len(msg_labels_shape) == 1:
+            params.class_num = 1
+        else:
+            params.class_num = msg_labels_shape[1]
+
+        model = HierachicalRNN(args=params)
+        model.load_state_dict(torch.load(params.load_model))
+        if params.cuda:
+            model = model.cuda()
+
+        model.eval()  # eval mode (batchnorm uses moving mean/variance instead of mini-batch mean/variance)
+        commit_ftrs = list()
+        with torch.no_grad():
+            for i, (batch) in enumerate(tqdm(batches)):
+                state_word = model.init_hidden_word()
+                state_sent = model.init_hidden_sent()
+                state_hunk = model.init_hidden_hunk()
+
+                pad_added_code, pad_removed_code, labels = batch
+                labels = torch.FloatTensor(labels)
+                commit_ftr = model.forward_commit_embeds_diff(pad_added_code, pad_removed_code, state_hunk, state_sent,
+                                                              state_word)
+                commit_ftrs.append(commit_ftr)
+            commit_ftrs = torch.cat(commit_ftrs).cpu().detach().numpy()
+        pickle.dump(commit_ftrs, open(params.name, 'wb'))
+
 if __name__ == '__main__':
-    params = read_args().parse_args()    
-    
+    params = read_args().parse_args()
+    cc2ftr = JIT_CC2ftr(params)
+
+    cc2ftr.apply_padding()
+    cc2ftr.apply_mapping()
     if params.train is True:
-        train_data = pickle.load(open(params.train_data, 'rb'))
-        train_ids, train_labels, train_messages, train_codes = train_data    
-
-        test_data = pickle.load(open(params.test_data, 'rb'))
-        test_ids, test_labels, test_messages, test_codes = test_data        
-
-        ids = train_ids + test_ids
-        labels = list(train_labels) + list(test_labels)
-        msgs = train_messages + test_messages
-        codes = train_codes + test_codes
-        
-        dictionary = pickle.load(open(params.dictionary_data, 'rb'))
-        dict_msg, dict_code = dictionary  
-
-        pad_msg = padding_message(data=msgs, max_length=params.msg_length)
-        added_code, removed_code = clean_and_reformat_code(codes)
-        pad_added_code = padding_commit_code(data=added_code, max_file=params.code_file, max_line=params.code_line, max_length=params.code_length)
-        pad_removed_code = padding_commit_code(data=removed_code, max_file=params.code_file, max_line=params.code_line, max_length=params.code_length)
-
-        pad_msg = mapping_dict_msg(pad_msg=pad_msg, dict_msg=dict_msg)
-        pad_added_code = mapping_dict_code(pad_code=pad_added_code, dict_code=dict_code)
-        pad_removed_code = mapping_dict_code(pad_code=pad_removed_code, dict_code=dict_code)
-        pad_msg_labels = convert_msg_to_label(pad_msg=pad_msg, dict_msg=dict_msg)
-
-        data = (pad_added_code, pad_removed_code, pad_msg_labels, dict_msg, dict_code)   
-        train_model(data=data, params=params)
-        print('--------------------------------------------------------------------------------')
-        print('--------------------------Finish the training process---------------------------')
-        print('--------------------------------------------------------------------------------')
-        exit()
+        cc2ftr.train()
     
     elif params.predict is True:
         data = pickle.load(open(params.predict_data, 'rb'))
