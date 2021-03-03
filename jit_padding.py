@@ -75,7 +75,7 @@ def convert_msg_to_label(pad_msg, dict_msg):
 
 def mapping_dict_msg(pad_msg, dict_msg):
     return np.array(
-        [np.array([dict_msg[w.lower()] if w.lower() in dict_msg.keys() else dict_msg['<NULL>'] for w in line.split(' ')]) for line in pad_msg])
+        [np.array([dict_msg[w.lower()] if (w.lower() in dict_msg.keys() and w != '<NULL>') else dict_msg['<NULL>'] for w in line.split(' ')]) for line in pad_msg])
 
 def mapping_dict_code(pad_code, dict_code):
     new_pad_code = list()
@@ -86,7 +86,7 @@ def mapping_dict_code(pad_code, dict_code):
             for line in file:
                 new_line = list()
                 for token in line.split(' '):
-                    if token.lower() in dict_code.keys():
+                    if token.lower() in dict_code.keys() and token != '<NULL>':
                         new_line.append(dict_code[token.lower()])
                     else:
                         new_line.append(dict_code['<NULL>'])
@@ -113,7 +113,8 @@ def clean_and_reformat_code(data):
             new_lines = list()
             for line in lines:
                 if len(line.strip()) > 0:
-                    new_lines.append(line)
+                    #remove double whitespaces/newlines by joining
+                    new_lines.append(" ".join(line.split()))
             files.append(new_lines)
         new_diff_added_code.append(files)
     for diff in data:
@@ -123,7 +124,8 @@ def clean_and_reformat_code(data):
             new_lines = list()
             for line in lines:
                 if len(line.strip()) > 0:
-                    new_lines.append(line)
+                    # remove double whitespaces/newlines by joining
+                    new_lines.append(" ".join(line.split()))
             files.append(new_lines)
         new_diff_removed_code.append(files)
     return (new_diff_added_code, new_diff_removed_code)
@@ -131,5 +133,5 @@ def clean_and_reformat_code(data):
 def padding_message(data, max_length):
     new_data = list()
     for d in data:
-        new_data.append(padding_length(line=d, max_length=max_length))
+        new_data.append(padding_length(line=" ".join(d.split()), max_length=max_length))
     return new_data
