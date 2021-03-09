@@ -64,11 +64,9 @@ class JIT_CC2ftr():
         self.params = params
         self.params.cuda = (not params.no_cuda) and torch.cuda.is_available()
         if self.params.cuda:
-            if params.device != -1:
-                torch.cuda.set_device(params.device)
-            torch.device('cuda')
+            self.params.device = torch.device('cuda')
         else:
-            torch.device('cpu')
+            self.params.device = torch.device('cpu')
 
         if params.train is True:
             train_data = pickle.load(open(params.train_data, 'rb'))
