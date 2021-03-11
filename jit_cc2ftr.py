@@ -63,10 +63,6 @@ class JIT_CC2ftr():
     def __init__(self, params):
         self.params = params
         self.params.cuda = (not params.no_cuda) and torch.cuda.is_available()
-        if self.params.cuda:
-            self.params.device = torch.device('cuda')
-        else:
-            self.params.device = torch.device('cpu')
 
         if params.train is True:
             train_data = pickle.load(open(params.train_data, 'rb'))
@@ -127,6 +123,8 @@ class JIT_CC2ftr():
         else:
             params.class_num = msg_labels_shape[1]
 
+        # Device configuration
+        params.device = torch.device('cuda' if params.cuda else 'cpu')
         model = HierachicalRNN(args=params)
         if params.cuda:
             model = model.cuda()
