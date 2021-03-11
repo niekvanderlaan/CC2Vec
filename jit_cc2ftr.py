@@ -132,8 +132,6 @@ class JIT_CC2ftr():
         optimizer = torch.optim.Adam(model.parameters(), lr=params.l2_reg_lambda)
         criterion = nn.BCEWithLogitsLoss()
 
-        batches = batches[:400]
-        params.num_epochs = 10
         for epoch in range(1, params.num_epochs + 1):
             total_loss = 0
             for i, (batch) in enumerate(tqdm(batches)):
