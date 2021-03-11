@@ -143,7 +143,7 @@ class JIT_CC2ftr():
                 state_hunk = model.init_hidden_hunk()
 
                 pad_added_code, pad_removed_code, labels = batch
-                labels = torch.FloatTensor(labels, device=params.device)
+                labels = torch.cuda.FloatTensor(labels)
                 optimizer.zero_grad()
                 predict = model.forward(pad_added_code, pad_removed_code, state_hunk, state_sent, state_word)
                 loss = criterion(predict, labels)
@@ -182,7 +182,7 @@ class JIT_CC2ftr():
                 state_hunk = model.init_hidden_hunk()
 
                 pad_added_code, pad_removed_code, labels = batch
-                labels = torch.FloatTensor(labels, device = params.device)
+                labels = torch.cuda.FloatTensor(labels)
                 commit_ftr = model.forward_commit_embeds_diff(pad_added_code, pad_removed_code, state_hunk, state_sent,
                                                               state_word)
                 commit_ftrs.append(commit_ftr)
